@@ -14,6 +14,7 @@ from .mlx_service import MLXService
 from .perplexity_service import PerplexityService
 import os
 from transformers import AutoTokenizer, AutoModelForTokenClassification, pipeline, AutoModelForSequenceClassification
+import requests
 
 load_dotenv()
 XAI_API_KEY = os.getenv("XAI_API_KEY")
@@ -112,22 +113,24 @@ class ResearchService:
                 "output_format": "Analysis Results Report"
             }
         ]
+
     def init_bert_model(self):
-        """BERT 모델 초기화"""
         try:
-            self.tokenizer = AutoTokenizer.from_pretrained("klue/bert-base")
-            self.model = AutoModelForSequenceClassification.from_pretrained(
-                "klue/bert-base",
-                num_labels=4
-            )
+        # 현재 단계 상태 초기화만 유지
+            self.current_step = 1
+
+            # 레이블 매핑 유지 (API 응답 처리에 필요)
             self.label_map = {
                 0: "description",
-                1: "keywords",
+                1: "keywords", 
                 2: "methodology",
                 3: "output_format"
             }
+            
+            self.logger.info("API-based classification initialized")
+            
         except Exception as e:
-            self.logger.error(f"BERT model initialization failed: {str(e)}")
+            self.logger.error(f"Initialization failed: {str(e)}")
             raise
 
     def _generate_research_plan(self, project: Project) -> str:
@@ -531,13 +534,10 @@ class ResearchService:
         return {"risks": risks}
 
     def _classify_section(self, text: str) -> str:
-        """Enhanced section classification with new categories"""
-        import torch
-        
         if not text.strip():
             return None
-            
-        # Updated section keywords
+                
+        # Section keywords for initial filtering
         section_keywords = {
             "description": ["description", "step description", "**description**"],
             "keywords": ["keyword", "keywords", "**keyword**", "**keywords**"],
@@ -546,35 +546,52 @@ class ResearchService:
             "success_criteria": ["success criteria", "success metrics", "**success criteria**"],
             "risk_mitigation": ["risk mitigation", "risks", "**risk mitigation**"]
         }
-        
+
         # Text preprocessing
         text = text.lower().strip()
-        
-        # Keyword-based classification
+
+        # Initial keyword-based classification
         for section, keywords in section_keywords.items():
             if any(keyword.lower() in text for keyword in keywords):
                 return section
-                
-        # BERT model classification
+
+        # API configuration
+        API_URL = "https://api-inference.huggingface.co/models/BAAI/bge-base-en-v1.5"
+        headers = {"Authorization": "Bearer apikeyexample"}
+
         try:
-            inputs = self.section_tokenizer(
-                text,
-                padding=True,
-                truncation=True,
-                max_length=128,
-                return_tensors="pt"
-            ).to(self.device)
+            # Sample texts for each category to enable zero-shot classification
+            category_examples = {
+                "description": "This section describes the main objectives and goals",
+                "keywords": "Key terms and important concepts: analysis, research, methodology",
+                "methodology": "The approach used will involve quantitative analysis",
+                "output_format": "The final deliverable will be a comprehensive report"
+            }
             
-            with torch.no_grad():
-                outputs = self.section_model(**inputs)
-                predictions = torch.softmax(outputs.logits, dim=1)
-                predicted_label = torch.argmax(predictions, dim=1).item()
+            # Prepare API payload with text and examples
+            payload = {
+                "inputs": {
+                    "source_sentence": text,
+                    "sentences": list(category_examples.values())
+                }
+            }
             
-            return self.label_map[predicted_label]
+            # Make API call
+            response = requests.post(API_URL, headers=headers, json=payload)
+            response.raise_for_status()
+            
+            # Process API response
+            similarities = response.json()
+            
+            # Find the category with highest similarity
+            max_similarity_index = similarities.index(max(similarities))
+            predicted_category = list(category_examples.keys())[max_similarity_index]
+            
+            return predicted_category
             
         except Exception as e:
-            self.logger.warning(f"BERT classification failed: {str(e)}")
-            return "description"
+            self.logger.warning(f"API classification failed: {str(e)}")
+            return "description"  # Default fallback
 
     def create_project(self, user_id: int, project_data: Dict) -> Project:
         """Enhanced project creation with new structure"""
